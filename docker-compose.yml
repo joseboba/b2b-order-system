@@ -103,7 +103,7 @@ services:
 
   products-api:
     build:
-      context: ./producs-api
+      context: ./products-api
       dockerfile: Dockerfile
     container_name: b2b-products-api
     ports:
