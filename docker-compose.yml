@@ -1,0 +1,186 @@
+services:
+
+  # ── Kafka infrastructure ────────────────────────────────────────────────────
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: b2b-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    healthcheck:
+      test: ["CMD", "cub", "zk-ready", "localhost:2181", "30"]
+      interval: 15s
+      timeout: 35s
+      retries: 5
+      start_period: 20s
+    networks:
+      - b2b-network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: b2b-kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - b2b-network
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: b2b-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: on-failure
+    command:
+      - bash
+      - -c
+      - >-
+        kafka-topics --create --if-not-exists --bootstrap-server kafka:29092
+        --topic orders-topic --partitions 3 --replication-factor 1 &&
+        kafka-topics --create --if-not-exists --bootstrap-server kafka:29092
+        --topic orders-dlt --partitions 1 --replication-factor 1 &&
+        echo 'Topics created.'
+    networks:
+      - b2b-network
+
+  # ── Persistence ────────────────────────────────────────────────────────────
+
+  mongodb:
+    image: mongo:7.0
+    container_name: b2b-mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: ${MONGO_DATABASE:-b2b_orders}
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: mongosh --eval 'db.adminCommand("ping")' --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - b2b-network
+
+  # ── Cache ──────────────────────────────────────────────────────────────────
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: b2b-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - b2b-network
+
+  # ── Application services ───────────────────────────────────────────────────
+
+  products-api:
+    build:
+      context: ./producs-api
+      dockerfile: Dockerfile
+    container_name: b2b-products-api
+    ports:
+      - "${PRODUCTS_API_PORT:-8081}:8081"
+    environment:
+      PORT: "8081"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -O /dev/null -q http://localhost:8081/products/PRD-001 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - b2b-network
+
+  clients-api:
+    build:
+      context: ./clients-api
+      dockerfile: Dockerfile
+    container_name: b2b-clients-api
+    ports:
+      - "${CLIENTS_API_PORT:-8082}:8082"
+    environment:
+      PORT: "8082"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -O /dev/null -q http://localhost:8082/clients/CLI-99821 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - b2b-network
+
+  order-worker:
+    build:
+      context: ./order-worker
+      dockerfile: Dockerfile
+    container_name: b2b-order-worker
+    ports:
+      - "${ORDER_WORKER_PORT:-8080}:8080"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      MONGO_URI: mongodb://mongodb:27017
+      MONGO_DATABASE: ${MONGO_DATABASE:-b2b_orders}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_TTL_SECONDS: ${REDIS_TTL_SECONDS:-300}
+      PRODUCTS_API_URL: http://products-api:8081
+      CLIENTS_API_URL: http://clients-api:8082
+      KAFKA_TOPIC_ORDERS: ${KAFKA_TOPIC_ORDERS:-orders-topic}
+      KAFKA_TOPIC_DLT: ${KAFKA_TOPIC_DLT:-orders-dlt}
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/actuator/health || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      products-api:
+        condition: service_healthy
+      clients-api:
+        condition: service_healthy
+    networks:
+      - b2b-network
+
+# ── Volumes & networks ────────────────────────────────────────────────────────
+
+volumes:
+  mongodb_data:
+  redis_data:
+
+networks:
+  b2b-network:
+    driver: bridge

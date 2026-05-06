@@ -1,0 +1,65 @@
+spring:
+  application:
+    name: order-worker
+  threads:
+    virtual:
+      enabled: true
+  mongodb:
+    uri: ${MONGO_URI:mongodb://localhost:27017}
+    database: ${MONGO_DATABASE:b2b_orders}
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: order-worker-group
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+    listener:
+      ack-mode: manual
+
+app:
+  kafka:
+    topics:
+      orders: ${KAFKA_TOPIC_ORDERS:orders-topic}
+      dlt: ${KAFKA_TOPIC_DLT:orders-dlt}
+  redis:
+    ttl-seconds: ${REDIS_TTL_SECONDS:300}
+  products-api:
+    url: ${PRODUCTS_API_URL:http://localhost:8081}
+  clients-api:
+    url: ${CLIENTS_API_URL:http://localhost:8082}
+
+resilience4j:
+  retry:
+    instances:
+      external-api:
+        max-attempts: 3
+        wait-duration: 500ms
+        retry-exceptions:
+          - java.io.IOException
+          - org.springframework.web.reactive.function.client.WebClientRequestException
+  circuitbreaker:
+    instances:
+      external-api:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 30s
+        permitted-number-of-calls-in-half-open-state: 5
+        register-health-indicator: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
